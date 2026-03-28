@@ -31,15 +31,6 @@ cd fuckfif
 pip install -r requirements.txt
 ```
 
-## 填写FiF口语用户名和密码
-在项目根目录创建`user.json`:
-```json
-{
-    "username": "你的FiF口语用户名",
-    "password": "你的FiF口语密码"
-}
-```
-
 ## 录制样本声音
 YourTTS需要一段10秒左右的录音来模仿你的音色以生成音色。你可以在安静的环境中使用手机录音机进行录音。然后重命名并放到这个路径`draft/target_voice.wav`。这个录音需要你朗读一段英文文本，大概在10秒钟左右，请在安静的地方进行以确保没有底噪。
 
