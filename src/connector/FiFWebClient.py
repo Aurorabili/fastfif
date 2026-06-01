@@ -58,7 +58,7 @@ class FiFWebClient:
         self,
         auth_mode="auto",
         username=None,
-        translation_model_path=r"D:\University\More\translate_model\m2m100_418M",
+        translation_model_path=r"translate_model\m2m100_418M",
         translation_model_type=r"m2m100_418M",
     ):
         """

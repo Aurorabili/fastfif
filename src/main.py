@@ -12,7 +12,7 @@ def start_api_server():
     """
     try:
         # 直接使用绝对路径，避免路径拼接错误
-        api_script = r"D:\University\More\AI\Echo\index-tts\index-tts\api_server.py"
+        api_script = r"index-tts\api_server.py"
 
         # 设置API服务器的工作目录为api_server.py所在的目录
         api_working_dir = os.path.dirname(api_script)
@@ -297,9 +297,7 @@ if __name__ == "__main__":
             )
 
             if "获取任务列表失败" in str(e):
-                login_state_path = (
-                    r"D:\University\More\fif\fuckfif\src\user_data\login_state.json"
-                )
+                login_state_path = r"user_data\login_state.json"
                 if os.path.exists(login_state_path):
                     print(f"[清理] 检测到登录状态错误，正在删除 {login_state_path}")
                     try:
