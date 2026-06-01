@@ -1,19 +1,7 @@
-# IDE
-.idea
-.vscode
-.devcontainer
-
-# cache
-draft/
-cache/
-.pytest_cache
-__pycache__/
-
-# models
-models
-
-# tmp
-tmp/
-
-# secret
 user.json
+user_data
+tmp
+draft
+*.pyc
+*.json
+ev
