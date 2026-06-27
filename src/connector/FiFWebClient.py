@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import time
 import random
 from playwright.sync_api import Page, sync_playwright
@@ -11,6 +12,9 @@ from transformers import (
 )
 import torch
 import re
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import config as app_config
 
 
 class FiFWebClient:
@@ -58,8 +62,10 @@ class FiFWebClient:
         self,
         auth_mode="auto",
         username=None,
-        translation_model_path=r"translate_model\m2m100_418M",
-        translation_model_type=r"m2m100_418M",
+        translation_model_path=None,
+        translation_model_type=None,
+        login_state_file=None,
+        user_data_dir=None,
     ):
         """
         初始化FiFWebClient
@@ -70,74 +76,189 @@ class FiFWebClient:
                 - "force_login": 强制重新登录
                 - "saved_only": 仅使用保存的登录状态，如果失败则抛出异常
             username (str): 用户名，用于验证保存的登录状态是否匹配
+            login_state_file (str): 登录状态文件路径，默认为 user_data/login_state.json
+                                    多账号模式下每个账号使用独立文件
+            user_data_dir (str): 浏览器用户数据目录路径，默认为 user_data/
+                                 多账号模式下每个账号使用独立目录
         """
         self.auth_mode = auth_mode
         self.username = username
-        self.translation_model_path = translation_model_path
-        self.translation_model_type = translation_model_type
+        self.translation_model_path = (
+            translation_model_path or app_config.get_translation_model_path()
+        )
+        self.translation_model_type = (
+            translation_model_type or app_config.get_translation_model_type()
+        )
         self.translation_model = None
         self.tokenizer = None
+        self.login_state_file = login_state_file
 
-        # 如果提供了模型路径，预加载翻译模型
         if self.translation_model_path and os.path.exists(self.translation_model_path):
             self._load_translation_model()
 
         self.playwright = sync_playwright().start()
 
-        # 随机选择一个User-Agent
         user_agent = random.choice(self.USER_AGENTS)
         print(f"使用User-Agent: {user_agent}")
 
-        # 定义用户数据目录路径
-        user_data_dir = os.path.join(os.getcwd(), "user_data")
+        base_user_data = os.path.join(os.getcwd(), "user_data")
 
-        # 如果用户数据目录不存在，创建一个默认的
-        if not os.path.exists(user_data_dir):
-            os.makedirs(user_data_dir)
-            print(f"创建新的用户数据目录: {user_data_dir}")
+        if user_data_dir:
+            effective_user_data_dir = user_data_dir
+        elif username:
+            effective_user_data_dir = os.path.join(os.getcwd(), f"user_data_{username}")
         else:
-            print(f"使用现有的用户数据目录: {user_data_dir}")
+            effective_user_data_dir = base_user_data
 
-        # 在浏览器启动参数中添加静音选项
+        if effective_user_data_dir != base_user_data and not os.path.exists(
+            effective_user_data_dir
+        ):
+            if os.path.exists(base_user_data):
+                import shutil
+
+                session_ignore_patterns = [
+                    "login_state*.json",
+                    "Cookies",
+                    "Cookies-journal",
+                    "Local Storage",
+                    "Session Storage",
+                    "IndexedDB",
+                    "Cache",
+                    "Code Cache",
+                    "GPUCache",
+                    "Service Worker",
+                    "blob_storage",
+                    "IndexedDB",
+                    "databases",
+                ]
+
+                try:
+                    shutil.copytree(
+                        base_user_data,
+                        effective_user_data_dir,
+                        ignore=shutil.ignore_patterns(*session_ignore_patterns),
+                    )
+                    print(
+                        f"[FiFWebClient] 已复制基础浏览器配置到: {effective_user_data_dir} (已排除会话数据)"
+                    )
+                except Exception as e:
+                    print(f"[FiFWebClient] 复制浏览器配置失败: {str(e)}，使用新目录")
+                    os.makedirs(effective_user_data_dir, exist_ok=True)
+            else:
+                os.makedirs(effective_user_data_dir, exist_ok=True)
+
+        if not os.path.exists(effective_user_data_dir):
+            os.makedirs(effective_user_data_dir)
+            print(f"创建新的用户数据目录: {effective_user_data_dir}")
+        else:
+            print(f"使用用户数据目录: {effective_user_data_dir}")
+
         browser_args = [
-            "--mute-audio",  # 静音
-            "--autoplay-policy=no-user-gesture-required",  # 允许自动播放
-            "--disable-features=AudioService",  # 禁用音频服务
+            "--mute-audio",
+            "--autoplay-policy=no-user-gesture-required",
+            "--disable-features=AudioService",
         ]
 
         self.context = self.playwright.chromium.launch_persistent_context(
-            user_data_dir=user_data_dir,
+            user_data_dir=effective_user_data_dir,
             headless=False,
-            channel="msedge",
+            channel=app_config.get_browser_channel(),
             permissions=["microphone"],
             user_agent=user_agent,
-            viewport={"width": 1200, "height": 800},
+            viewport=app_config.get_viewport(),
             ignore_https_errors=True,
             java_script_enabled=True,
             bypass_csp=True,
-            args=browser_args,  # 添加启动参数
+            args=browser_args,
         )
 
-        # 从持久化上下文中获取页面
         self.page = (
             self.context.pages[0] if self.context.pages else self.context.new_page()
         )
 
-        # 添加执行脚本以隐藏自动化特征
-        self.page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined,
-            });
-        """)
+        if username:
+            try:
+                from scheduler.mic_controller import MicController
 
-        # 保存浏览器实例引用
+                self.page.expose_function(
+                    "_getMicSpeaker", lambda: MicController.get_speaker() or ""
+                )
+                self.page.add_init_script(f"""
+                    Object.defineProperty(navigator, 'webdriver', {{
+                        get: () => undefined,
+                    }});
+
+                    (function() {{
+                        var origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+                        window.__activeMicStreams = [];
+
+                        navigator.mediaDevices.getUserMedia = async function(constraints) {{
+                            var stream = await origGetUserMedia(constraints);
+                            if (constraints && constraints.audio) {{
+                                window.__activeMicStreams.push(stream);
+                            }}
+                            return stream;
+                        }};
+
+                        window.__muteMic = function() {{
+                            window.__activeMicStreams.forEach(function(s) {{
+                                s.getAudioTracks().forEach(function(t) {{ t.enabled = false; }});
+                            }});
+                        }};
+
+                        window.__unmuteMic = function() {{
+                            window.__activeMicStreams.forEach(function(s) {{
+                                s.getAudioTracks().forEach(function(t) {{ t.enabled = true; }});
+                            }});
+                        }};
+
+                        var MY_NAME = '{username}';
+                        setInterval(async function() {{
+                            try {{
+                                var speaker = await window._getMicSpeaker();
+                                if (speaker && speaker !== MY_NAME) {{
+                                    window.__muteMic();
+                                }} else {{
+                                    window.__unmuteMic();
+                                }}
+                            }} catch(e) {{}}
+                        }}, 200);
+                    }})();
+                    """)
+                print(f"[FiFWebClient] 已注入麦克风串音防护脚本 (账号: {username})")
+            except Exception as e:
+                print(f"[FiFWebClient] 注入麦克风防护脚本失败: {str(e)}")
+                self.page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined,
+                    });
+                """)
+        else:
+            self.page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined,
+                });
+            """)
+
         self.browser = self.context.browser
 
     def __del__(self):
-        if hasattr(self, "browser") and self.browser:
-            self.browser.close()
-        if hasattr(self, "playwright") and self.playwright:
-            self.playwright.stop()
+        try:
+            if hasattr(self, "context") and self.context:
+                try:
+                    self.context.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "playwright") and self.playwright:
+                try:
+                    self.playwright.stop()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _load_translation_model(self):
         """加载翻译模型"""
@@ -238,9 +359,14 @@ class FiFWebClient:
             print(f"翻译失败: {str(e)}，返回原文")
             return text
 
+    def _get_login_state_file(self):
+        if self.login_state_file:
+            return self.login_state_file
+        return os.path.join(os.getcwd(), "user_data", "login_state.json")
+
     def save_login_state(self):
         """保存登录状态到文件"""
-        state_file = os.path.join(os.getcwd(), "user_data", "login_state.json")
+        state_file = self._get_login_state_file()
 
         login_state = {
             "username": self.username,
@@ -259,7 +385,7 @@ class FiFWebClient:
 
     def load_login_state(self):
         """从文件加载登录状态"""
-        state_file = os.path.join(os.getcwd(), "user_data", "login_state.json")
+        state_file = self._get_login_state_file()
 
         if not os.path.exists(state_file):
             print("未找到保存的登录状态文件")
@@ -270,7 +396,10 @@ class FiFWebClient:
                 login_state = json.load(f)
 
             # 检查状态是否过期（7天有效期）
-            if time.time() - login_state.get("saved_time", 0) > 7 * 24 * 3600:
+            if (
+                time.time() - login_state.get("saved_time", 0)
+                > app_config.get_login_state_expire_days() * 24 * 3600
+            ):
                 print("保存的登录状态已过期")
                 return False
 
@@ -287,10 +416,14 @@ class FiFWebClient:
 
             # 设置localStorage中的认证信息（在正确上下文中执行）
             if self.user_auth.get("token"):
-                # 确保在合适的页面上下文中设置localStorage
                 try:
                     self.page.goto("https://www.fifedu.com")
                     self.page.wait_for_load_state("networkidle")
+
+                    self.context.clear_cookies()
+                    self.page.evaluate("localStorage.clear()")
+                    self.page.evaluate("sessionStorage.clear()")
+
                     self.page.evaluate(
                         f"localStorage.setItem('Authorization', '{self.user_auth['token']}')"
                     )
@@ -347,6 +480,7 @@ class FiFWebClient:
         self.page.goto(self.urls["login"])
 
         # 清除可能的旧登录信息
+        self.context.clear_cookies()
         self.page.evaluate("localStorage.clear()")
         self.page.evaluate("sessionStorage.clear()")
 
@@ -589,7 +723,72 @@ class FiFWebClient:
             except Exception as e:
                 print(f"点击'我知道啦！'按钮失败: {str(e)}")
                 # 调试信息：输出当前iframe中的所有按钮文本
+            finally:
                 try:
+                    if has_non_recording_questions:
+                        print("检测到非录音题目，处理填空题、选择题、判断题")
+                        # 获取非录音题目的正确答案
+                        non_recording_answers = self.get_non_recording_answers(
+                            page, level_id
+                        )
+                        # 处理非录音题目
+                        self.handle_non_recording_questions(page, non_recording_answers)
+
+                        # 提交答案（如果有提交按钮）
+                        try:
+                            submit_button = page.frame_locator("iframe").get_by_role(
+                                "button", name="提交"
+                            )
+                            if submit_button.is_visible():
+                                submit_button.click()
+                                print("已提交非录音题目答案")
+                        except:
+                            print("未找到提交按钮，可能自动提交")
+
+                        print("非录音题目处理完成。等待提交。")
+                        try:
+                            page.get_by_text("AI 评分").is_enabled(
+                                timeout=300000
+                            )  # 5分钟超时
+                        except Exception as e:
+                            raise Exception("等待提交超时（5分钟），可能页面卡死")
+                    else:
+                        # 原有的录音逻辑
+                        for answer_index, answer_text in enumerate(answer):
+                            print("等待开始录音。")
+                            try:
+                                page.frame_locator("iframe").get_by_text(
+                                    "结束录音"
+                                ).is_enabled(
+                                    timeout=300000
+                                )  # 5分钟超时
+                            except Exception as e:
+                                raise Exception(
+                                    f"等待开始录音超时（5分钟），可能页面卡死。当前是第{answer_index + 1}条答案"
+                                )
+
+                            print(
+                                "正在回答第{}条。答案，内容为：\n{}".format(
+                                    answer_index + 1, answer_text
+                                )
+                            )
+                            speaker.speak(answer_text)
+                            print("第{}条回答完成。".format(answer_index + 1))
+
+                            page.frame_locator("iframe").get_by_text("结束录音").click(
+                                force=True
+                            )
+
+                        print("挑战完成。等待提交。")
+                        try:
+                            page.get_by_text("AI 评分").is_enabled(
+                                timeout=300000
+                            )  # 5分钟超时
+                        except Exception as e:
+                            raise Exception("等待提交超时（5分钟），可能页面卡死")
+
+                        print("当前单元结束。")
+                except Exception:
                     main_iframe = page.frame_locator("iframe")
                     all_buttons = main_iframe.locator("button")
                     print(f"当前iframe中找到 {all_buttons.count()} 个按钮:")
@@ -601,7 +800,7 @@ class FiFWebClient:
                             print(f"  按钮 {i}: 获取文本失败")
                 except Exception as debug_e:
                     print(f"调试信息获取失败: {str(debug_e)}")
-                raise Exception("无法点击'我知道啦！'按钮，请检查页面结构")
+                    raise Exception("无法点击'我知道啦！'按钮，请检查页面结构")
         else:
             print("普通关卡，点击'开始挑战'按钮")
             page.frame_locator("iframe").get_by_role("button", name="开始挑战").click()
