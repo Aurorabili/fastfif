@@ -352,21 +352,10 @@ def _run_tasks(fif, speaker, username):
                     print(
                         f"[AccountWorker] {username} 第{k + 1}个等级执行出错: {str(level_err)}"
                     )
-                    is_browser_error = any(
-                        kw in str(level_err)
-                        for kw in [
-                            "Target page",
-                            "TargetClosedError",
-                            "Browser has been closed",
-                            "context or browser",
-                        ]
+                    print(
+                        f"[AccountWorker] {username} 不跳过等级，终止当前进程以触发重试..."
                     )
-                    if is_browser_error:
-                        print(
-                            f"[AccountWorker] {username} 检测到浏览器崩溃，终止当前账号任务循环以触发重试..."
-                        )
-                        raise
-                    print(f"[AccountWorker] {username} 跳过此等级，继续下一个等级...")
+                    raise
 
 
 class AccountWorker:

@@ -133,11 +133,12 @@ class TTSManager:
             self.gpu_instances.append(inst)
             self.instances.append(inst)
 
-        for i in range(max_cpu):
-            port = cpu_ports[i] if i < len(cpu_ports) else 7008 + i
-            inst = TTSInstance(port=port, use_gpu=False)
-            self.cpu_instances.append(inst)
-            self.instances.append(inst)
+        if schedule_mode == "gpu_cpu_hybrid":
+            for i in range(max_cpu):
+                port = cpu_ports[i] if i < len(cpu_ports) else 7008 + i
+                inst = TTSInstance(port=port, use_gpu=False)
+                self.cpu_instances.append(inst)
+                self.instances.append(inst)
 
         if schedule_mode == "multi_gpu_locked":
             self.inference_semaphore = threading.Semaphore(1)
