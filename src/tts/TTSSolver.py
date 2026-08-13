@@ -1,3 +1,7 @@
+import os
+
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
 from TTS.api import TTS
 
 
